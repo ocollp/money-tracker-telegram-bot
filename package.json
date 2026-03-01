@@ -1,0 +1,27 @@
+{
+  "name": "money-tracker-telegram-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js --money-tracker-telegram-bot",
+    "bot:run": "pkill -f 'money-tracker-telegram-bot' 2>/dev/null; sleep 1; node index.js --money-tracker-telegram-bot",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ocollp/money-tracker-telegram-bot.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ocollp/money-tracker-telegram-bot/issues"
+  },
+  "homepage": "https://github.com/ocollp/money-tracker-telegram-bot#readme",
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "googleapis": "^171.4.0",
+    "node-telegram-bot-api": "^0.67.0"
+  }
+}
