@@ -1,11 +1,23 @@
 require('dotenv').config();
 
 const { createBot } = require('./lib/telegram');
-const { parseMessage, rowToSheetRow, getConceptsList, parseBulkLines, parseDateInput } = require('./lib/parseMessage');
+const { parseMessage, rowToSheetRow, parseBulkLines } = require('./lib/parseMessage');
 const { appendRow, getSheetsClient, clearLastRow, getRowIndicesForMonth, deleteRows, copyMonthToMonth } = require('./lib/sheets');
 
 const spreadsheetId1 = process.env.SPREADSHEET_ID;
 const spreadsheetId2 = process.env.SPREADSHEET_ID_2;
+const GOOGLE_FORM_URL_01 = process.env.GOOGLE_FORM_URL_01 || '';
+const GOOGLE_FORM_URL_02 = process.env.GOOGLE_FORM_URL_02 || process.env.GOOGLE_FORM_URL || '';
+
+function getWelcomeMessage() {
+  const olgaUrl = GOOGLE_FORM_URL_01 && GOOGLE_FORM_URL_01.startsWith('http') ? GOOGLE_FORM_URL_01 : '(set GOOGLE_FORM_URL_01 in .env)';
+  const andreaUrl = GOOGLE_FORM_URL_02 && GOOGLE_FORM_URL_02.startsWith('http') ? GOOGLE_FORM_URL_02 : '(set GOOGLE_FORM_URL_02 in .env)';
+  return `👩🏼 Olga: ${olgaUrl}\n👩🏻 Andrea: ${andreaUrl}`;
+}
+
+function getResetMessage() {
+  return 'Reset. ' + getWelcomeMessage();
+}
 
 const USER_1 = 1;
 const USER_2 = 2;
@@ -128,7 +140,9 @@ function conceptsListMessage() {
   return CONCEPTS.map((c) => `${c.id}. ${c.label}`).join('\n');
 }
 
-const OLGA_ENTITIES_MESSAGE = `Compte d'estalvis (La Caixa): 
+const OLGA_ENTITIES_MESSAGE = `Send one message with all values (one line per concept, *N. amount* in €). Example: 1. 500, 2. 400…
+
+Compte d'estalvis (La Caixa): 
 Compte corrent (La Caixa): 
 Compte corrent (Revolut): 
 Compte compartit flexible (Revolut): 
@@ -172,7 +186,7 @@ const OLGA_LABEL_TO_INDEX = {};
   OLGA_LABEL_TO_INDEX[normalizeLabel(label)] = idx;
 });
 
-const ANDREA_ENTITIES_MESSAGE = `Si ets Andrea, envia els valors (pots copiar i enganxar amb el format *Label: xifra*):
+const ANDREA_ENTITIES_MESSAGE = `If you're Andrea, send the values (you can copy and paste with format *Label: amount*):
 
 Compte corrent (BBVA): 
 Compte corrent (Revolut): 
@@ -317,7 +331,7 @@ function parseBulkMessage(text, conceptsArray = CONCEPTS) {
       amount = concept.fixedAmount;
     }
     if (Number.isNaN(amount) || amount < 0) {
-      errors.push(`Línia ${i + 1}: xifra no vàlida`);
+      errors.push(`Line ${i + 1}: invalid amount`);
       continue;
     }
     entries.push({ conceptIndex: num - 1, amount });
@@ -331,7 +345,7 @@ async function sendNextSeqPrompt(bot, chatId) {
   if (!state || state.step !== 'seq') return;
   const spreadsheetId = getSpreadsheetId(state.user);
   if (!spreadsheetId) {
-    await bot.sendMessage(chatId, 'Full no configurat.');
+    await bot.sendMessage(chatId, 'Sheet not configured.');
     return;
   }
   let { conceptIndex, sessionEntries } = state;
@@ -346,7 +360,7 @@ async function sendNextSeqPrompt(bot, chatId) {
       await bot.sendMessage(chatId, `✅ ${c.fixedAmount.toLocaleString('es-ES')} € · ${c.label}`);
     } catch (err) {
       console.error('Sheets error:', err.message);
-      await bot.sendMessage(chatId, 'No s\'ha pogut afegir ' + c.label);
+      await bot.sendMessage(chatId, 'Could not add ' + c.label);
       return;
     }
   }
@@ -355,7 +369,7 @@ async function sendNextSeqPrompt(bot, chatId) {
     const summary = sessionEntries.map((e, i) => `${i + 1}. ${e.label}: ${Number(e.amount).toLocaleString('es-ES')} €`).join('\n');
     await bot.sendMessage(
       chatId,
-      `Has afegit:\n${summary}\n\nÉs correcte? *Sí* per acabar, *No* per editar (afegir més o eliminar l'última).`,
+      `You added:\n${summary}\n\nIs this correct? *Yes* to finish, *No* to edit (add more or remove last entry).`,
       { parse_mode: 'Markdown', ...confirmKeyboard }
     );
     return;
@@ -363,7 +377,7 @@ async function sendNextSeqPrompt(bot, chatId) {
   const c = CONCEPTS[conceptIndex];
   await bot.sendMessage(
     chatId,
-    `*${conceptIndex + 1}/14* · ${c.label}\n💰 Xifra? (€) o *salta* per ometre.`,
+    `*${conceptIndex + 1}/14* · ${c.label}\n💰 Amount? (€) or *skip* to omit.`,
     { parse_mode: 'Markdown', ...keyboardWithFi }
   );
 }
@@ -445,7 +459,7 @@ const whoKeyboard = {
 
 const keyboardWithFi = {
   reply_markup: {
-    keyboard: [['Olga'], ['Andrea'], ['Fi', 'Sortir']],
+    keyboard: [['Olga'], ['Andrea'], ['Done', 'Exit']],
     resize_keyboard: true,
     one_time_keyboard: false,
   },
@@ -453,7 +467,7 @@ const keyboardWithFi = {
 
 const confirmKeyboard = {
   reply_markup: {
-    keyboard: [['Sí'], ['No (editar)']],
+    keyboard: [['Yes'], ['No (edit)']],
     resize_keyboard: true,
     one_time_keyboard: false,
   },
@@ -461,19 +475,19 @@ const confirmKeyboard = {
 
 const overwriteKeyboard = {
   reply_markup: {
-    keyboard: [['Sí'], ['No']],
+    keyboard: [['Yes'], ['No']],
     resize_keyboard: true,
     one_time_keyboard: false,
   },
 };
 
 function monthLabel(month, year) {
-  return `${new Date(2000, month - 1, 1).toLocaleString('ca', { month: 'long' })} ${year}`;
+  return `${new Date(2000, month - 1, 1).toLocaleString('en', { month: 'long' })} ${year}`;
 }
 
 const editKeyboard = {
   reply_markup: {
-    keyboard: [['Altre'], ['Darrera'], ['Fi', 'Sortir']],
+    keyboard: [['Another'], ['Last'], ['Done', 'Exit']],
     resize_keyboard: true,
     one_time_keyboard: false,
   },
@@ -501,14 +515,14 @@ function main() {
   bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     resetChat(chatId);
-    await bot.sendMessage(chatId, 'Ets l\'Olga o l\'Andrea?', whoKeyboard);
+    await bot.sendMessage(chatId, getWelcomeMessage(), whoKeyboard);
   });
 
   bot.onText(/\/help/, async (msg) => {
     const chatId = msg.chat.id;
     await bot.sendMessage(
       chatId,
-      `Prem *Olga* o *Andrea*. Després demano *un sol missatge* amb totes les xifres: una línia per concepte, *N. xifra* (€). Ex: 1. 500, 2. 400… Vivienda personal (s’afegeix 150 000 €). Data: dia 1 del mes actual.\n\nQuan acabis (*Fi*) et mostro el resum i et pregunto si és correcte o vols editar (afegir més o eliminar l'última).\n\n*Reiniciar:* *stop* o /stop.`,
+      `Press *Olga* or *Andrea*. Then I ask for *one message* with all amounts: one line per concept, *N. amount* (€). Example: 1. 500, 2. 400… Vivienda personal (s’afegeix 150 000 €). Date: 1st of current month.\n\nWhen you finish (*Done*) I show the summary and ask if correct or you want to edit (add more or remove last entry).\n\n*Reset:* *stop* or /stop.`,
       { parse_mode: 'Markdown' }
     );
   });
@@ -516,7 +530,7 @@ function main() {
   bot.onText(/\/stop/, async (msg) => {
     const chatId = msg.chat.id;
     resetChat(chatId);
-    await bot.sendMessage(chatId, 'Reiniciat. Ets l\'Olga o l\'Andrea?', whoKeyboard);
+    await bot.sendMessage(chatId, getResetMessage(), whoKeyboard);
   });
 
   bot.on('message', async (msg) => {
@@ -528,9 +542,9 @@ function main() {
     if (!text || text.startsWith('/')) return;
 
     const name = text.toLowerCase();
-    if (name === 'sortir') {
+    if (name === 'sortir' || name === 'exit') {
       resetChat(chatId);
-      await bot.sendMessage(chatId, 'Reiniciat. Ets l\'Olga o l\'Andrea?', whoKeyboard);
+      await bot.sendMessage(chatId, getResetMessage(), whoKeyboard);
       return;
     }
     const userId = nameToUserId(name);
@@ -538,16 +552,16 @@ function main() {
       userByChat.set(chatId, userId);
       clearState(chatId);
       stateByChat.set(chatId, { user: userId, step: 'bulk', sessionEntries: [] });
-      const listMessage = userId === USER_1 ? OLGA_ENTITIES_MESSAGE : userId === USER_2 ? ANDREA_ENTITIES_MESSAGE : 'Prem *Olga* o *Andrea* per començar.';
+      const listMessage = userId === USER_1 ? OLGA_ENTITIES_MESSAGE : userId === USER_2 ? ANDREA_ENTITIES_MESSAGE : 'Press *Olga* or *Andrea* to start.';
       await bot.sendMessage(
         chatId,
-        `Hola ${getDisplayName(userId)} 👋\n\n${listMessage}`,
+        `Hi ${getDisplayName(userId)} 👋\n\n${listMessage}`,
         { parse_mode: 'Markdown', ...keyboardWithFi }
       );
       return;
     }
 
-    if (name === 'fi' || name === 'no' || name === 'acabar' || name === 'stop') {
+    if (name === 'fi' || name === 'no' || name === 'acabar' || name === 'stop' || name === 'done' || name === 'Done') {
       const state = stateByChat.get(chatId);
       const user = userByChat.get(chatId);
       if (user && state?.sessionEntries?.length > 0) {
@@ -555,19 +569,19 @@ function main() {
         const summary = state.sessionEntries.map((e, i) => `${i + 1}. ${e.label}: ${Number(e.amount).toLocaleString('es-ES')} €`).join('\n');
         await bot.sendMessage(
           chatId,
-          `Has afegit:\n${summary}\n\nÉs correcte? *Sí* per acabar, *No* per editar (afegir més o eliminar l'última).`,
+          `You added:\n${summary}\n\nIs this correct? *Yes* to finish, *No* to edit (add more or remove last entry).`,
           { parse_mode: 'Markdown', ...confirmKeyboard }
         );
         return;
       }
       resetChat(chatId);
-      await bot.sendMessage(chatId, 'Reiniciat. Ets l\'Olga o l\'Andrea?', whoKeyboard);
+      await bot.sendMessage(chatId, getResetMessage(), whoKeyboard);
       return;
     }
 
     const user = userByChat.get(chatId);
     if (!user) {
-      await bot.sendMessage(chatId, 'Ets l\'Olga o l\'Andrea?', whoKeyboard);
+      await bot.sendMessage(chatId, getWelcomeMessage(), whoKeyboard);
       return;
     }
 
@@ -589,7 +603,7 @@ function main() {
       const spreadsheetId = getSpreadsheetId(state.user);
       if (!spreadsheetId) {
         const whoName = state.user === USER_2 ? 'Andrea' : state.user === USER_1 ? 'Olga' : '';
-        await bot.sendMessage(chatId, whoName ? `Full d'${whoName} no configurat. Comprova SPREADSHEET_ID${state.user === USER_2 ? '_2' : ''} al .env` : 'Full no configurat.');
+        await bot.sendMessage(chatId, whoName ? `Sheet for ${whoName} not configured. Check SPREADSHEET_ID${state.user === USER_2 ? '_2' : ''} in .env` : 'Sheet not configured.');
         return;
       }
       const concepts = getConceptsForUser(state.user);
@@ -617,8 +631,8 @@ function main() {
       if (entries.length === 0) {
         const errorDetail =
           errors.length > 0
-            ? `❌ El que ha fallat:\n${errors.join('\n')}\n\nRevisa que cada línia sigui *Label: xifra* (ex. Compte corrent (BBVA): 100). Assegura't que has triat qui ets (Andrea/Olga) correctament.`
-            : 'No s\'han trobat línies vàlides. Escriu *Label: xifra* (ex. Efectiu: 10) o *N. xifra* (ex. 1. 500).';
+            ? `❌ What failed:\n${errors.join('\n')}\n\nCheck that each line is *Label: amount* (e.g. Compte corrent (BBVA): 100). Make sure you chose who you are (Andrea/Olga) correctly.`
+            : 'No valid lines found. Use *Label: amount* (e.g. Efectiu: 10) or *N. amount* (e.g. 1. 500).';
         await bot.sendMessage(chatId, errorDetail, { parse_mode: 'Markdown', ...keyboardWithFi });
         return;
       }
@@ -651,8 +665,8 @@ function main() {
         console.error('Error checking month data:', err.message);
       }
       if (existingPrev.length > 0 && existingForWrite.length === 0) {
-        const prevMonthName = new Date(2000, prev.month - 1, 1).toLocaleString('ca', { month: 'long' });
-        const destMonthName = new Date(2000, writeBase.month - 1, 1).toLocaleString('ca', { month: 'long' });
+        const prevMonthName = new Date(2000, prev.month - 1, 1).toLocaleString('en', { month: 'long' });
+        const destMonthName = new Date(2000, writeBase.month - 1, 1).toLocaleString('en', { month: 'long' });
         stateByChat.set(chatId, {
           ...state,
           step: 'confirm_copy_previous',
@@ -665,7 +679,7 @@ function main() {
         });
         await bot.sendMessage(
           chatId,
-          `Hi ha dades de *${prevMonthName} ${prev.year}*. Vols copiar-les a *${destMonthName} ${writeBase.year}*?`,
+          `There is data for *${prevMonthName} ${prev.year}*. Do you want to copy it to *${destMonthName} ${writeBase.year}*?`,
           { parse_mode: 'Markdown', ...overwriteKeyboard }
         );
         return;
@@ -700,7 +714,7 @@ function main() {
           };
           await bot.sendMessage(
             chatId,
-            `Ja hi ha dades per *${label1}* i *${label2}*. Vols sustituir algun mes? Tria quin:`,
+            `There is already data for *${label1}* and *${label2}*. Do you want to replace a month? Choose which:`,
             { parse_mode: 'Markdown', ...replaceKeyboard }
           );
           return;
@@ -709,7 +723,7 @@ function main() {
         const nextMonthName = monthLabel(nextBase.month, nextBase.year);
         await bot.sendMessage(
           chatId,
-          `Ja hi ha dades per *${monthName}*. Les afegiré al mes següent (*${nextMonthName}*).`,
+          `There is already data for *${monthName}*. I will add to the next month (*${nextMonthName}*).`,
           { parse_mode: 'Markdown' }
         );
         const sessionEntries = [];
@@ -739,13 +753,13 @@ function main() {
           } catch (err) {
             console.error('Sheets error:', err.message);
             const whoName = state.user === USER_2 ? 'Andrea' : 'Olga';
-            await bot.sendMessage(chatId, `No s'ha pogut afegir ${c.label} al full d'${whoName}. Error: ${err.message}`);
+            await bot.sendMessage(chatId, `Could not add ${c.label} to ${whoName}'s sheet. Error: ${err.message}`);
             return;
           }
         }
         stateByChat.set(chatId, { ...state, step: 'confirm', sessionEntries });
         const summary = sessionEntries.map((s, i) => `${i + 1}. ${s.label}: ${Number(s.amount).toLocaleString('es-ES')} €`).join('\n');
-        let confirmText = `Afegit al mes següent ✅\n${summary}\n\nÉs correcte? *Sí* per acabar, *No* per editar.`;
+        let confirmText = `Added to next month ✅\n${summary}\n\nIs this correct? *Yes* to finish, *No* to edit.`;
         if (errors.length > 0) confirmText += `\n\n⚠️ No reconeguts: ${errors.join('; ')}`;
         await bot.sendMessage(chatId, confirmText, { parse_mode: 'Markdown', ...confirmKeyboard });
         return;
@@ -777,14 +791,14 @@ function main() {
         } catch (err) {
           console.error('Sheets error:', err.message);
           const whoName = state.user === USER_2 ? 'Andrea' : 'Olga';
-          await bot.sendMessage(chatId, `No s'ha pogut afegir ${c.label} al full d'${whoName}. Error: ${err.message}`);
+          await bot.sendMessage(chatId, `Could not add ${c.label} to ${whoName}'s sheet. Error: ${err.message}`);
           return;
         }
       }
       stateByChat.set(chatId, { ...state, step: 'confirm', sessionEntries });
       const summary = sessionEntries.map((s, i) => `${i + 1}. ${s.label}: ${Number(s.amount).toLocaleString('es-ES')} €`).join('\n');
-      const noDataMsg = 'No hi havia dades per aquest mes; s\'han afegit.';
-      let confirmText = `${noDataMsg}\n\nAfegit ✅\n${summary}\n\nÉs correcte? *Sí* per acabar, *No* per editar.`;
+      const noDataMsg = 'There was no data for this month; it has been added.';
+      let confirmText = `${noDataMsg}\n\nAdded ✅\n${summary}\n\nIs this correct? *Yes* to finish, *No* to edit.`;
       if (errors.length > 0) confirmText += `\n\n⚠️ No reconeguts: ${errors.join('; ')}`;
       await bot.sendMessage(chatId, confirmText, { parse_mode: 'Markdown', ...confirmKeyboard });
       return;
@@ -793,7 +807,7 @@ function main() {
     if (state.step === 'seq') {
       const spreadsheetId = getSpreadsheetId(state.user);
       if (!spreadsheetId) {
-        await bot.sendMessage(chatId, 'Full no configurat.');
+        await bot.sendMessage(chatId, 'Sheet not configured.');
         return;
       }
       const isSkip = /^(salta|skip|omitir|omite|-)$/i.test(name);
@@ -805,7 +819,7 @@ function main() {
       const amount = parseFloat(text.replace(',', '.'));
       if (Number.isNaN(amount)) {
         const c = CONCEPTS[state.conceptIndex];
-        await bot.sendMessage(chatId, `Escriu un número (€) o *salta* per ometre.\n_${c.label}_`, { parse_mode: 'Markdown', ...keyboardWithFi });
+        await bot.sendMessage(chatId, `Enter an amount (€) or *skip* to omit.\n_${c.label}_`, { parse_mode: 'Markdown', ...keyboardWithFi });
         return;
       }
       const c = CONCEPTS[state.conceptIndex];
@@ -826,7 +840,7 @@ function main() {
         await sendNextSeqPrompt(bot, chatId);
       } catch (err) {
         console.error('Sheets error:', err.message);
-        await bot.sendMessage(chatId, 'No s\'ha pogut afegir.', keyboardWithFi);
+        await bot.sendMessage(chatId, 'Could not add.', keyboardWithFi);
       }
       return;
     }
@@ -834,13 +848,13 @@ function main() {
     if (state.step === 'concept') {
       const concept = getConceptById(text);
       if (!concept) {
-        await bot.sendMessage(chatId, `Escriu un número del 1 al ${CONCEPTS.length}:\n${conceptsListMessage()}`, keyboardWithFi);
+        await bot.sendMessage(chatId, `Enter a number from 1 to ${CONCEPTS.length}:\n${conceptsListMessage()}`, keyboardWithFi);
         return;
       }
 
       const spreadsheetId = getSpreadsheetId(state.user);
       if (!spreadsheetId) {
-        await bot.sendMessage(chatId, 'Full no configurat.');
+        await bot.sendMessage(chatId, 'Sheet not configured.');
         clearState(chatId);
         return;
       }
@@ -851,30 +865,30 @@ function main() {
           await appendRow(spreadsheetId, rowToSheetRow(row));
           const newEntries = [...(state.sessionEntries || []), { label: concept.label, amount: concept.fixedAmount }];
           stateByChat.set(chatId, { ...state, sessionEntries: newEntries });
-          await bot.sendMessage(chatId, `Afegit ✅ ${concept.fixedAmount.toLocaleString('es-ES')} € · ${concept.label}`);
+          await bot.sendMessage(chatId, `Added ✅ ${concept.fixedAmount.toLocaleString('es-ES')} € · ${concept.label}`);
         } catch (err) {
           console.error('Sheets error:', err.message);
-          await bot.sendMessage(chatId, 'No s\'ha pogut afegir.');
+          await bot.sendMessage(chatId, 'Could not add.');
         }
-        await bot.sendMessage(chatId, 'Altre concepte? (escriu el número o *Fi* per acabar)', { parse_mode: 'Markdown', ...keyboardWithFi });
+        await bot.sendMessage(chatId, 'Another concept? (enter the number or *Done* to finish)', { parse_mode: 'Markdown', ...keyboardWithFi });
         return;
       }
 
       stateByChat.set(chatId, { ...state, step: 'amount', concept });
-      await bot.sendMessage(chatId, `💰 Xifra? (€)\n_${concept.label}_`, { parse_mode: 'Markdown', ...keyboardWithFi });
+      await bot.sendMessage(chatId, `💰 Amount? (€)\n_${concept.label}_`, { parse_mode: 'Markdown', ...keyboardWithFi });
       return;
     }
 
     if (state.step === 'amount') {
       const amount = parseFloat(text.replace(',', '.'));
       if (Number.isNaN(amount)) {
-        await bot.sendMessage(chatId, 'La xifra ha de ser un número. Exemple: 8859', keyboardWithFi);
+        await bot.sendMessage(chatId, 'The amount must be a number. Example: 8859', keyboardWithFi);
         return;
       }
 
       const spreadsheetId = getSpreadsheetId(state.user);
       if (!spreadsheetId) {
-        await bot.sendMessage(chatId, 'Full no configurat.');
+        await bot.sendMessage(chatId, 'Sheet not configured.');
         clearState(chatId);
         return;
       }
@@ -884,17 +898,17 @@ function main() {
         await appendRow(spreadsheetId, rowToSheetRow(row));
         const newEntries = [...(state.sessionEntries || []), { label: state.concept.label, amount }];
         stateByChat.set(chatId, { user: state.user, step: 'concept', sessionEntries: newEntries });
-        await bot.sendMessage(chatId, `Afegit ✅ ${amount} € · ${state.concept.label}`);
+        await bot.sendMessage(chatId, `Added ✅ ${amount} € · ${state.concept.label}`);
       } catch (err) {
         console.error('Sheets error:', err.message);
-        await bot.sendMessage(chatId, 'No s\'ha pogut afegir.');
+        await bot.sendMessage(chatId, 'Could not add.');
       }
 
-      await bot.sendMessage(chatId, 'Altre concepte? (escriu el número o *Fi* per acabar)', { parse_mode: 'Markdown', ...keyboardWithFi });
+      await bot.sendMessage(chatId, 'Another concept? (enter the number or *Done* to finish)', { parse_mode: 'Markdown', ...keyboardWithFi });
     }
 
     if (state.step === 'confirm_copy_previous') {
-      const copyYes = name === 'sí' || name === 'si' || name === 'sip';
+      const copyYes = name === 'sí' || name === 'si' || name === 'sip' || name === 'yes';
       const copyNo = name === 'no';
       if (copyNo) {
         const writeBase = { dateStr: `01/${String(state.pendingMonth).padStart(2, '0')}/${state.pendingYear}`, month: state.pendingMonth, year: state.pendingYear };
@@ -917,13 +931,13 @@ function main() {
             if (!isAutoViviendaOlga && !isAutoViviendaAndrea) sessionEntries.push({ label: getSummaryLabel(state.user, e.conceptIndex), amount });
           } catch (err) {
             console.error('Sheets error:', err.message);
-            await bot.sendMessage(chatId, `No s'ha pogut afegir: ${err.message}`);
+            await bot.sendMessage(chatId, `Could not add: ${err.message}`);
             return;
           }
         }
         stateByChat.set(chatId, { ...state, step: 'confirm', sessionEntries });
         const summary = sessionEntries.map((s, i) => `${i + 1}. ${s.label}: ${Number(s.amount).toLocaleString('es-ES')} €`).join('\n');
-        let confirmText = `No hi havia dades per aquest mes; s'han afegit.\n\nAfegit ✅\n${summary}\n\nÉs correcte? *Sí* per acabar, *No* per editar.`;
+        let confirmText = `There was no data for this month; it has been added.\n\nAdded ✅\n${summary}\n\nIs this correct? *Yes* to finish, *No* to edit.`;
         if (errors.length > 0) confirmText += `\n\n⚠️ No reconeguts: ${errors.join('; ')}`;
         await bot.sendMessage(chatId, confirmText, { parse_mode: 'Markdown', ...confirmKeyboard });
         return;
@@ -931,23 +945,23 @@ function main() {
       if (copyYes) {
         const spreadsheetId = getSpreadsheetId(state.user);
         if (!spreadsheetId) {
-          await bot.sendMessage(chatId, 'Full no configurat.');
+          await bot.sendMessage(chatId, 'Sheet not configured.');
           return;
         }
         try {
           await copyMonthToMonth(spreadsheetId, state.pendingPrevMonth, state.pendingPrevYear, state.pendingMonth, state.pendingYear);
         } catch (err) {
           console.error('Error copying month:', err.message);
-          await bot.sendMessage(chatId, `No s'han pogut copiar les dades: ${err.message}`);
+          await bot.sendMessage(chatId, `Could not copy data: ${err.message}`);
           return;
         }
-        const destMonthName = new Date(2000, state.pendingMonth - 1, 1).toLocaleString('ca', { month: 'long' });
+        const destMonthName = new Date(2000, state.pendingMonth - 1, 1).toLocaleString('en', { month: 'long' });
         const writeBase = { dateStr: `01/${String(state.pendingMonth).padStart(2, '0')}/${state.pendingYear}`, month: state.pendingMonth, year: state.pendingYear };
         const nextBase = nextMonthFrom(writeBase);
-        const nextMonthName = new Date(2000, nextBase.month - 1, 1).toLocaleString('ca', { month: 'long' });
+        const nextMonthName = new Date(2000, nextBase.month - 1, 1).toLocaleString('en', { month: 'long' });
         await bot.sendMessage(
           chatId,
-          `S'han copiat les dades a *${destMonthName} ${state.pendingYear}*. Ja hi ha dades allà. Les afegiré al mes següent (*${nextMonthName} ${nextBase.year}*).`,
+          `Data was copied to *${destMonthName} ${state.pendingYear}*. There is already data there. I will add to the next month (*${nextMonthName} ${nextBase.year}*).`,
           { parse_mode: 'Markdown' }
         );
         const concepts = getConceptsForUser(state.user);
@@ -968,18 +982,18 @@ function main() {
             if (!isAutoViviendaOlga && !isAutoViviendaAndrea) sessionEntries.push({ label: getSummaryLabel(state.user, e.conceptIndex), amount });
           } catch (err) {
             console.error('Sheets error:', err.message);
-            await bot.sendMessage(chatId, `No s'ha pogut afegir: ${err.message}`);
+            await bot.sendMessage(chatId, `Could not add: ${err.message}`);
             return;
           }
         }
         stateByChat.set(chatId, { ...state, step: 'confirm', sessionEntries, pendingPrevMonth: undefined, pendingPrevYear: undefined });
         const summary = sessionEntries.map((s, i) => `${i + 1}. ${s.label}: ${Number(s.amount).toLocaleString('es-ES')} €`).join('\n');
-        let confirmText = `Afegit al mes següent ✅\n${summary}\n\nÉs correcte? *Sí* per acabar, *No* per editar.`;
+        let confirmText = `Added to next month ✅\n${summary}\n\nIs this correct? *Yes* to finish, *No* to edit.`;
         if (errors.length > 0) confirmText += `\n\n⚠️ No reconeguts: ${errors.join('; ')}`;
         await bot.sendMessage(chatId, confirmText, { parse_mode: 'Markdown', ...confirmKeyboard });
         return;
       }
-      await bot.sendMessage(chatId, 'Respon *Sí* (copiar) o *No* (afegir només les xifres noves).', { parse_mode: 'Markdown', ...overwriteKeyboard });
+      await bot.sendMessage(chatId, 'Reply *Yes* (copy) or *No* (add only the new amounts).', { parse_mode: 'Markdown', ...overwriteKeyboard });
       return;
     }
 
@@ -987,19 +1001,19 @@ function main() {
       const reply = (name || '').trim().toLowerCase();
       if (reply === 'no') {
         resetChat(chatId);
-        await bot.sendMessage(chatId, 'D\'acord, no s\'ha sustituït res.\n\nReiniciat. Ets l\'Olga o l\'Andrea?', { parse_mode: 'Markdown', ...whoKeyboard });
+        await bot.sendMessage(chatId, 'OK, nothing was replaced.\n\n' + getResetMessage(), { parse_mode: 'Markdown', ...whoKeyboard });
         return;
       }
       const options = state.replaceOptions || [];
       const chosen = options.find((opt) => opt.label.trim().toLowerCase() === reply);
       if (!chosen) {
         const labels = options.map((o) => o.label).join(' o ');
-        await bot.sendMessage(chatId, `Tria un mes: *${labels}*, o *No* per no sustituir.`, { parse_mode: 'Markdown' });
+        await bot.sendMessage(chatId, `Choose a month: *${labels}*, or *No* to not replace.`, { parse_mode: 'Markdown' });
         return;
       }
       const spreadsheetId = getSpreadsheetId(state.user);
       if (!spreadsheetId) {
-        await bot.sendMessage(chatId, 'Full no configurat.');
+        await bot.sendMessage(chatId, 'Sheet not configured.');
         return;
       }
       const concepts = getConceptsForUser(state.user);
@@ -1010,14 +1024,14 @@ function main() {
         rowIndices = await getRowIndicesForMonth(spreadsheetId, chosen.month, chosen.year);
       } catch (err) {
         console.error('Error getting row indices:', err.message);
-        await bot.sendMessage(chatId, `No s'han pogut llegir les dades del full: ${err.message}`);
+        await bot.sendMessage(chatId, `Could not read sheet data: ${err.message}`);
         return;
       }
       try {
         await deleteRows(spreadsheetId, rowIndices);
       } catch (err) {
         console.error('Error deleting rows:', err.message);
-        await bot.sendMessage(chatId, `No s'han pogut eliminar les files: ${err.message}`);
+        await bot.sendMessage(chatId, `Could not delete rows: ${err.message}`);
         return;
       }
       const replaceBase = { dateStr: chosen.dateStr, month: chosen.month, year: chosen.year };
@@ -1036,26 +1050,26 @@ function main() {
           if (!isAutoViviendaOlga && !isAutoViviendaAndrea) sessionEntries.push({ label: getSummaryLabel(state.user, e.conceptIndex), amount });
         } catch (err) {
           console.error('Sheets error:', err.message);
-          await bot.sendMessage(chatId, `No s'ha pogut afegir: ${err.message}`);
+          await bot.sendMessage(chatId, `Could not add: ${err.message}`);
           return;
         }
       }
       stateByChat.set(chatId, { ...state, step: 'confirm', sessionEntries, replaceOptions: undefined });
       const summary = sessionEntries.map((s, i) => `${i + 1}. ${s.label}: ${Number(s.amount).toLocaleString('es-ES')} €`).join('\n');
-      let confirmText = `Sustituït *${chosen.label}* ✅\n${summary}\n\nÉs correcte? *Sí* per acabar, *No* per editar.`;
+      let confirmText = `Replaced *${chosen.label}* ✅\n${summary}\n\nIs this correct? *Yes* to finish, *No* to edit.`;
       if (errors.length > 0) confirmText += `\n\n⚠️ No reconeguts: ${errors.join('; ')}`;
       await bot.sendMessage(chatId, confirmText, { parse_mode: 'Markdown', ...confirmKeyboard });
       return;
     }
 
     if (state.step === 'confirm_overwrite') {
-      const overwriteYes = name === 'sí' || name === 'si' || name === 'sip';
+      const overwriteYes = name === 'sí' || name === 'si' || name === 'sip' || name === 'yes';
       const overwriteNo = name === 'no';
       if (overwriteNo) {
         resetChat(chatId);
         await bot.sendMessage(
           chatId,
-          'D\'acord, no s\'ha sobreescrit res.\n\nReiniciat. Ets l\'Olga o l\'Andrea?',
+          'OK, nothing was overwritten.\n\n' + getResetMessage(),
           { parse_mode: 'Markdown', ...whoKeyboard }
         );
         return;
@@ -1063,7 +1077,7 @@ function main() {
       if (overwriteYes) {
         const spreadsheetId = getSpreadsheetId(state.user);
         if (!spreadsheetId) {
-          await bot.sendMessage(chatId, 'Full no configurat.');
+          await bot.sendMessage(chatId, 'Sheet not configured.');
           return;
         }
         let rowIndices = [];
@@ -1071,7 +1085,7 @@ function main() {
           rowIndices = await getRowIndicesForMonth(spreadsheetId, state.pendingMonth, state.pendingYear);
         } catch (err) {
           console.error('Error getting row indices for overwrite:', err.message);
-          await bot.sendMessage(chatId, `No s'han pogut llegir les dades del full: ${err.message}`);
+          await bot.sendMessage(chatId, `Could not read sheet data: ${err.message}`);
           return;
         }
         if (rowIndices.length > 0) {
@@ -1079,7 +1093,7 @@ function main() {
             await deleteRows(spreadsheetId, rowIndices);
           } catch (err) {
             console.error('Error deleting rows:', err.message);
-            await bot.sendMessage(chatId, `No s'han pogut eliminar les files: ${err.message}`);
+            await bot.sendMessage(chatId, `Could not delete rows: ${err.message}`);
             return;
           }
         }
@@ -1115,36 +1129,36 @@ function main() {
           } catch (err) {
             console.error('Sheets error:', err.message);
             const whoName = state.user === USER_2 ? 'Andrea' : 'Olga';
-            await bot.sendMessage(chatId, `No s'ha pogut afegir ${c.label} al full d'${whoName}. Error: ${err.message}`);
+            await bot.sendMessage(chatId, `Could not add ${c.label} to ${whoName}'s sheet. Error: ${err.message}`);
             return;
           }
         }
         stateByChat.set(chatId, { ...state, step: 'confirm', sessionEntries });
-        const monthName = new Date(2000, state.pendingMonth - 1, 1).toLocaleString('ca', { month: 'long' });
+        const monthName = new Date(2000, state.pendingMonth - 1, 1).toLocaleString('en', { month: 'long' });
         const summary = sessionEntries.map((s, i) => `${i + 1}. ${s.label}: ${Number(s.amount).toLocaleString('es-ES')} €`).join('\n');
-        let confirmText = `S'han substituït les dades de *${monthName} ${state.pendingYear}*.\n\nActualitzat ✅\n${summary}\n\nÉs correcte? *Sí* per acabar, *No* per editar.`;
+        let confirmText = `Replaced data for *${monthName} ${state.pendingYear}*.\n\nUpdated ✅\n${summary}\n\nIs this correct? *Yes* to finish, *No* to edit.`;
         if (errors.length > 0) confirmText += `\n\n⚠️ No reconeguts: ${errors.join('; ')}`;
         await bot.sendMessage(chatId, confirmText, { parse_mode: 'Markdown', ...confirmKeyboard });
         return;
       }
       await bot.sendMessage(
         chatId,
-        'Tria una opció:\n\n*Sí* → Substitueixo les dades del full amb les xifres que m\'has enviat.\n*No* → No canvio res i reinicio.',
+        'Choose an option:\n\n*Yes* → I replace the sheet data with the amounts you sent.\n*No* → I change nothing and reset.',
         { parse_mode: 'Markdown', ...overwriteKeyboard }
       );
       return;
     }
 
     if (state.step === 'confirm') {
-      const ok = name === 'sí' || name === 'si' || name === 'correcte' || name === 'ok' || name === 'sip';
-      const no = name === 'no' || name === 'editar' || name === 'no (editar)' || name.startsWith('no ');
+      const ok = name === 'sí' || name === 'si' || name === 'correcte' || name === 'ok' || name === 'sip' || name === 'yes' || name === 'Yes';
+      const no = name === 'no' || name === 'editar' || name === 'no (editar)' || name === 'no (edit)' || name.startsWith('no ');
       if (ok) {
         const userId = userByChat.get(chatId);
         const excelLink = getExcelLinkMessage(userId);
         resetChat(chatId);
         const endMsg = excelLink
-          ? `${excelLink}\n\nReiniciat. Ets l\'Olga o l\'Andrea?`
-          : 'Reiniciat. Ets l\'Olga o l\'Andrea?';
+          ? `${excelLink}\n\n${getResetMessage()}`
+          : getResetMessage();
         await bot.sendMessage(chatId, endMsg, { parse_mode: 'Markdown', ...whoKeyboard });
         return;
       }
@@ -1152,56 +1166,56 @@ function main() {
         stateByChat.set(chatId, { ...state, step: 'edit' });
         await bot.sendMessage(
           chatId,
-          'Escriu *Altre* per afegir més conceptes, o *Darrera* per eliminar l\'última entrada.',
+          'Type *Another* to add more concepts, or *Last* to remove the last entry.',
           { parse_mode: 'Markdown', ...editKeyboard }
         );
         return;
       }
-      await bot.sendMessage(chatId, 'Respon *Sí* o *No (editar)*.', { parse_mode: 'Markdown', ...confirmKeyboard });
+      await bot.sendMessage(chatId, 'Reply *Yes* or *No (edit)*.', { parse_mode: 'Markdown', ...confirmKeyboard });
       return;
     }
 
     if (state.step === 'edit') {
-      if (name === 'altre') {
+      if (name === 'altre' || name === 'another') {
         stateByChat.set(chatId, { ...state, step: 'concept' });
         await bot.sendMessage(
           chatId,
-          `Tria concepte (escriu el número):\n${conceptsListMessage()}`,
+          `Choose concept (enter the number):\n${conceptsListMessage()}`,
           { parse_mode: 'Markdown', ...keyboardWithFi }
         );
         return;
       }
-      if (name === 'darrera') {
+      if (name === 'darrera' || name === 'last') {
         const spreadsheetId = getSpreadsheetId(state.user);
         if (spreadsheetId && state.sessionEntries?.length > 0) {
           try {
             await clearLastRow(spreadsheetId);
             const prevEntries = state.sessionEntries.slice(0, -1);
             stateByChat.set(chatId, { ...state, sessionEntries: prevEntries, step: 'concept' });
-            await bot.sendMessage(chatId, 'Darrera entrada eliminada.', keyboardWithFi);
-            await bot.sendMessage(chatId, 'Altre concepte? (escriu el número o *Fi* per acabar)', { parse_mode: 'Markdown', ...keyboardWithFi });
+            await bot.sendMessage(chatId, 'Last entry deleted.', keyboardWithFi);
+            await bot.sendMessage(chatId, 'Another concept? (enter the number or *Done* to finish)', { parse_mode: 'Markdown', ...keyboardWithFi });
           } catch (err) {
             console.error('Sheets error:', err.message);
-            await bot.sendMessage(chatId, 'No s\'ha pogut eliminar.', editKeyboard);
+            await bot.sendMessage(chatId, 'Could not delete.', editKeyboard);
           }
         } else {
-          await bot.sendMessage(chatId, 'No hi ha cap entrada per eliminar.', editKeyboard);
+          await bot.sendMessage(chatId, 'No entries to remove.', editKeyboard);
         }
         return;
       }
-      if (name === 'fi') {
+      if (name === 'fi' || name === 'done') {
         const prevEntries = state.sessionEntries || [];
         const summary = prevEntries.map((e, i) => `${i + 1}. ${e.label}: ${Number(e.amount).toLocaleString('es-ES')} €`).join('\n');
         if (!summary) {
           resetChat(chatId);
-          await bot.sendMessage(chatId, 'No hi ha entrades. Ets l\'Olga o l\'Andrea?', whoKeyboard);
+          await bot.sendMessage(chatId, 'No entries. ' + getWelcomeMessage(), whoKeyboard);
           return;
         }
         stateByChat.set(chatId, { ...state, step: 'confirm' });
-        await bot.sendMessage(chatId, `Has afegit:\n${summary}\n\nÉs correcte? *Sí* per acabar, *No* per editar.`, { parse_mode: 'Markdown', ...confirmKeyboard });
+        await bot.sendMessage(chatId, `Has afegit:\n${summary}\n\nIs this correct? *Yes* to finish, *No* to edit.`, { parse_mode: 'Markdown', ...confirmKeyboard });
         return;
       }
-      await bot.sendMessage(chatId, 'Escriu *Altre*, *Darrera* o *Fi*.', { parse_mode: 'Markdown', ...editKeyboard });
+      await bot.sendMessage(chatId, 'Type *Another*, *Last* or *Done*.', { parse_mode: 'Markdown', ...editKeyboard });
       return;
     }
   });
@@ -1220,7 +1234,7 @@ function main() {
       stateByChat.set(chatId, { user, step: 'concept' });
       await bot.sendMessage(
         chatId,
-        `Tria concepte (escriu el número):\n${conceptsListMessage()}`,
+        `Choose concept (enter the number):\n${conceptsListMessage()}`,
         { parse_mode: 'Markdown', ...keyboardWithFi }
       );
       return;
@@ -1232,9 +1246,9 @@ function main() {
       const row = buildRow(indexaConcept, amount);
       try {
         await appendRow(spreadsheetId, rowToSheetRow(row));
-        await bot.sendMessage(chatId, `Afegit ✅ ${amount} € · ${indexaConcept.label}`);
+        await bot.sendMessage(chatId, `Added ✅ ${amount} € · ${indexaConcept.label}`);
       } catch (err) {
-        await bot.sendMessage(chatId, 'No s\'ha pogut afegir.');
+        await bot.sendMessage(chatId, 'Could not add.');
       }
       return;
     }
@@ -1247,17 +1261,17 @@ function main() {
 
     try {
       await appendRow(spreadsheetId, rowToSheetRow(parsed));
-      await bot.sendMessage(chatId, `Afegit: ${parsed.amount} € · ${parsed.conceptLabel}`);
+      await bot.sendMessage(chatId, `Added: ${parsed.amount} € · ${parsed.conceptLabel}`);
     } catch (err) {
       console.error('Sheets error:', err.message);
-      await bot.sendMessage(chatId, 'No s\'ha pogut afegir.');
+      await bot.sendMessage(chatId, 'Could not add.');
     }
   });
 
   bot.on('polling_error', (err) => {
     const is409 = err.message && String(err.message).includes('409');
     if (is409) {
-      console.error('409 Conflict: una altra instància del bot pot estar en marxa. Espera uns segons i deixa\'n només una. Reintent en 10 s...');
+      console.error('409 Conflict: another bot instance may be running. Wait a few seconds and leave only one. Retrying in 10 s...');
       bot.stopPolling().catch(() => {});
       setTimeout(() => {
         bot.startPolling().catch((e) => console.error('Error en reprendre polling:', e.message));
